@@ -5,6 +5,7 @@ import com.youtube.be.dao.ContentResourceDao;
 import com.youtube.be.dto.TranscodingMessageDto;
 import com.youtube.be.entity.ContentEntity;
 import com.youtube.be.entity.ContentResourceEntity;
+import com.youtube.be.enums.ContentState;
 import com.youtube.be.enums.ResourceFormat;
 import com.youtube.be.service.ContentService;
 import com.youtube.be.service.QueueService;
@@ -39,6 +40,7 @@ public class ContentServiceImpl implements ContentService {
                 .title(name)
                 .description("Test desc")
                 .publisher("Hardik")
+                .state(ContentState.INIT.name())
                 .build());
 
         // get video id and upload to storage
@@ -60,11 +62,8 @@ public class ContentServiceImpl implements ContentService {
                 TranscodingMessageDto.builder()
                         .rawFilePath(rawFilePath)
                         .destinationPath(destinationPath)
+                        .contentId(content.getId())
                         .build());
-
-        // update status in DB
-
-        // add transcoded path in db
 
         return null;
     }

@@ -18,16 +18,16 @@ import java.util.UUID;
 public abstract class AbstractEntity {
 
     @Id
-    private UUID id;
+    private String id;
 
     @PrePersist
     public void assignId() {
         if (id == null) {
-            id = UUID.randomUUID();
+            id = UUID.randomUUID().toString();
         }
     }
 
     public String getId() {
-        return id.toString();
+        return id;
     }
 }

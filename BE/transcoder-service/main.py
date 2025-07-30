@@ -1,4 +1,4 @@
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, Producer
 import requests
 import subprocess
 import os
@@ -22,6 +22,8 @@ conf = {
     'group.id': 'transcoding-consumer-group',
     'auto.offset.reset': 'earliest'
 }
+
+producer = Producer(conf)
 
 consumer = Consumer(conf)
 topic = 'transcoding-topic'
@@ -47,13 +49,14 @@ def get_message_from_kafka():
         data = json.loads(raw_value.decode('utf-8'))
         raw_path = data.get("rawFilePath")
         dest_path = data.get("destinationPath")
+        content_id = data.get("contentId")
 
-        if not raw_path or not dest_path:
+        if not raw_path or not dest_path or not content_id:
             logging.warning("⚠️ Missing required keys in message")
             return None
 
         consumer.commit(msg)
-        return {"rawFilePath": raw_path, "destinationPath": dest_path}
+        return {"rawFilePath": raw_path, "destinationPath": dest_path, "contentId" : content_id}
 
     except json.JSONDecodeError as e:
         logging.error(f"❌ JSON decode failed: {e}")
@@ -99,8 +102,10 @@ def transcode_to_hls(input_path, output_dir):
         logging.info(f"🎞️ Transcoding started: {input_path}")
         subprocess.run(command, check=True)
         logging.info(f"✅ Transcoding complete. Output at {output_path}")
+        return True
     except subprocess.CalledProcessError as e:
         logging.error(f"❌ Transcoding failed: {e}")
+        return False
 
 
 def upload_to_storage(output_dir, upload_path):
@@ -117,6 +122,9 @@ def upload_to_storage(output_dir, upload_path):
                     logging.info(f"📤 Uploaded: {f_name}")
                 else:
                     logging.error(f"❌ Upload failed for {f_name}. Status: {response.status_code} | {response.text}")
+                    return False
+
+    return True
 
 
 def clear_tmp_directory(tmp_path=TMP_DIR):
@@ -135,20 +143,50 @@ def clear_tmp_directory(tmp_path=TMP_DIR):
         logging.error(f"❌ Could not clear {tmp_path}: {e}")
 
 
-def process_message(raw_file_path, destination_file_path):
+def process_message(raw_file_path, destination_file_path, content_id):
     try:
         file_name = os.path.basename(raw_file_path)
         input_path = os.path.join(TMP_DIR, file_name)
 
         if not download_file(raw_file_path, input_path):
+            send_transcoding_status(content_id, False)
             return
 
-        transcode_to_hls(input_path, TRANSCODED_DIR)
-        upload_to_storage(TRANSCODED_DIR, destination_file_path)
+        transcoding_success = transcode_to_hls(input_path, TRANSCODED_DIR)
+
+        if not transcoding_success:
+            send_transcoding_status(content_id, False)
+            return
+
+        upload_success = upload_to_storage(TRANSCODED_DIR, destination_file_path)
+
+        if not upload_success:
+            send_transcoding_status(content_id, False)
+            return
+
+        send_transcoding_status(content_id, True, destination_file_path + "/output.m3u8")
         clear_tmp_directory()
 
     except Exception as e:
         logging.error(f"❌ Error processing file {raw_file_path}: {e}")
+        send_transcoding_status(content_id, False)
+
+
+def send_transcoding_status(content_id, status, transcoded_path = None):
+
+    message = {
+        "contentId" : content_id,
+        "success" : status,
+        "transcodedPath" : transcoded_path
+    }
+
+    producer.produce(
+        topic="transcoding-update-topic",
+        key=content_id,
+        value=json.dumps(message)
+    )
+
+    logging.info(f"📥 Status Message sent: {message}")
 
 
 # ===================== Main Loop =====================
@@ -159,8 +197,14 @@ if __name__ == "__main__":
             file_paths = get_message_from_kafka()
             if not file_paths:
                 continue
+
             logging.info(f"📥 Message received: {file_paths}")
-            executor.submit(process_message, file_paths["rawFilePath"], file_paths["destinationPath"])
+            executor.submit(
+                process_message,
+                file_paths["rawFilePath"],
+                file_paths["destinationPath"],
+                file_paths["contentId"])
+
     except Exception as e:
         logging.error(f"❌ Fatal error: {e}")
     finally:
